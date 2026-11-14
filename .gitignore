@@ -1,0 +1,16 @@
+.env
+*.pem
+*.key
+data/tpm/*.db
+data/tpm/*.db-*
+data/tpm/traefik-providers.env
+data/tpm/backups/*
+!data/tpm/backups/.gitkeep
+data/tpm/custom-certs/*
+!data/tpm/custom-certs/.gitkeep
+data/traefik/acme.json
+logs/**/*.log
+configs/traefik/traefik.yml
+configs/traefik/vhosts/*
+!configs/traefik/vhosts/.gitkeep
+.DS_Store
