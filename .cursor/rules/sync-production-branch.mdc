@@ -1,0 +1,44 @@
+---
+description: Keep the production deploy branch in sync with relevant main changes
+alwaysApply: true
+---
+
+# Sync `production` Branch
+
+This repo has a lean orphan branch **`production`** (Compose deploy tree only).
+
+Whenever you change anything on **`main`** that also belongs on **`production`**, update **`production` in the same turn** — do not wait to be asked.
+
+## What lives on `production`
+
+- `docker-compose.yml` (image pull only; no `build:`)
+- `example.env`
+- `init.sh`
+- `README.md` (deploy-focused)
+- `configs/traefik/traefik.base.yml`
+- Empty runtime dirs with `.gitkeep` (`data/…`, `logs/…`, `configs/traefik/vhosts/`)
+- `.gitignore`, `LICENSE`
+
+## Always mirror when you touch
+
+| Change on `main` | Action on `production` |
+|------------------|------------------------|
+| `example.env` | Copy / apply the same env keys & comments |
+| `docker-compose.yml` (runtime/ports/volumes/env) | Apply equivalent changes; **never** add a local `build:` section |
+| `scripts/init.sh` or init behavior | Update `init.sh` on `production` |
+| Traefik base static config | Update `configs/traefik/traefik.base.yml` |
+| Quick start / deploy docs in root `README.md` | Keep `production` README deploy steps accurate |
+| App version / default `TPM_IMAGE` tag | Align version comments / image tag defaults if present |
+| New required data/log dirs | Add dirs + `.gitkeep` on `production` |
+
+## Do not copy onto `production`
+
+Source code (`server/`, `web/`), `Dockerfile`, `.github/`, `docs/`, `images/`, `Makefile`, tests, `node_modules`, etc.
+
+## How to apply
+
+1. Finish the `main` edit.
+2. Check out or patch `production` (worktree / checkout) and apply the mirrored files.
+3. Leave commits/pushes to the user unless they explicitly ask to commit or push.
+
+If a change is deploy-relevant and you only updated `main`, that is incomplete work.

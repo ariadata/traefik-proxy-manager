@@ -1,0 +1,39 @@
+# Backend echo apps for TPM E2E — run on internal VM (192.168.20.235)
+networks:
+  apps:
+    name: tpm-test-apps
+
+services:
+  whoami:
+    image: traefik/whoami:v1.11.0
+    container_name: tpm-whoami
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    networks: [apps]
+
+  ws-echo:
+    image: jmalloc/echo-server:v0.3.7
+    container_name: tpm-ws-echo
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    networks: [apps]
+
+  tcp-echo:
+    image: alpine/socat:1.8.0.3
+    container_name: tpm-tcp-echo
+    restart: unless-stopped
+    command: ["TCP-LISTEN:9001,fork,reuseaddr", "EXEC:'/bin/cat'"]
+    ports:
+      - "9001:9001"
+    networks: [apps]
+
+  udp-echo:
+    image: alpine/socat:1.8.0.3
+    container_name: tpm-udp-echo
+    restart: unless-stopped
+    command: ["UDP-RECVFROM:9002,fork", "EXEC:'/bin/cat'"]
+    ports:
+      - "9002:9002/udp"
+    networks: [apps]

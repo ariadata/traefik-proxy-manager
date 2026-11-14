@@ -1,0 +1,94 @@
+networks:
+  tpm-network:
+    name: tpm-network
+    driver: bridge
+
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3.7}
+    container_name: ${COMPOSE_PROJECT_NAME:-tpm}_traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    env_file:
+      - path: ./data/tpm/traefik-providers.env
+        required: false
+    environment:
+      TZ: ${DC_TZ:-UTC}
+    ports:
+      - "${DC_TRAEFIK_HTTP_PORT:-80}:80"
+      - "${DC_TRAEFIK_HTTPS_PORT:-443}:443"
+      # TCP/UDP streams (keep the publish range small; widen only if you need more)
+      - "${DC_TRAEFIK_STREAM_TCP:-10000-10020:10000-10020}"
+      - "${DC_TRAEFIK_STREAM_UDP:-10000-10020:10000-10020/udp}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./configs/traefik:/etc/traefik:ro
+      - ./data/traefik/acme.json:/data/acme.json
+      - ./data/tpm/custom-certs:/certs/custom:ro
+      - ./logs/traefik:/var/log/traefik
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tpm-network
+
+  tpm:
+    image: ghcr.io/ariadata/traefik-proxy-manager:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-tpm}_app
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    depends_on:
+      traefik:
+        condition: service_healthy
+    environment:
+      TZ: ${DC_TZ:-UTC}
+      NODE_ENV: production
+      APP_PORT: "8080"
+      APP_HOST: 0.0.0.0
+      TPM_DATA_DIR: /app/data/tpm
+      TPM_SQLITE_PATH: /app/data/tpm/tpm.db
+      TPM_VHOSTS_DIR: /app/configs/traefik/vhosts
+      TPM_TRAEFIK_STATIC: /app/configs/traefik/traefik.yml
+      TPM_TRAEFIK_ACME: /app/data/traefik/acme.json
+      TPM_CUSTOM_CERTS_DIR: /app/data/tpm/custom-certs
+      TPM_WEB_DIR: /app/web/dist
+      TPM_SECRETS_KEY: ${TPM_SECRETS_KEY:-}
+      TPM_INTERNAL_URL: ${TPM_INTERNAL_URL:-http://tpm:8080}
+      TPM_ACCESS_LOG: ${TPM_ACCESS_LOG:-/app/logs/traefik/access.log}
+      TPM_BACKUP_DIR: ${TPM_BACKUP_DIR:-/app/data/tpm/backups}
+    ports:
+      # Admin bind — prefer 127.0.0.1:8080 (see example.env)
+      - "${DC_TPM_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./data/tpm:/app/data/tpm
+      - ./data/traefik:/app/data/traefik
+      - ./configs/traefik:/app/configs/traefik
+      - ./logs/tpm:/app/logs
+      - ./logs/traefik:/app/logs/traefik:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tpm-network
