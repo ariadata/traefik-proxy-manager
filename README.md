@@ -27,7 +27,7 @@
 
 | Module | Capabilities |
 | :--- | :--- |
-| **Proxy Hosts** | Domain-to-upstream routing, forced HTTPS, ACME or custom certificates |
+| **Proxy Hosts** | Multi-upstream WRR routing, optional Traefik health checks, forced HTTPS, ACME or custom certificates |
 | **SSL Management** | ACME resolvers (`HTTP-01` / `DNS-01`), PEM uploads, certificate expiry checker |
 | **Access Lists** | IP allow/deny rules combined with BasicAuth |
 | **Redirects & Parked Hosts** | Custom HTTP redirections and static parked pages |

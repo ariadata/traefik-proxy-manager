@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS proxy_hosts (
   forward_scheme TEXT NOT NULL,
   forward_host TEXT NOT NULL,
   forward_port INTEGER NOT NULL,
+  upstreams TEXT NOT NULL DEFAULT '[]',
+  health_check_enabled INTEGER NOT NULL DEFAULT 0,
+  health_check_path TEXT NOT NULL DEFAULT '/',
+  health_check_interval TEXT NOT NULL DEFAULT '30s',
+  health_check_timeout TEXT NOT NULL DEFAULT '5s',
   certificate_id TEXT REFERENCES certificates(id) ON DELETE SET NULL,
   cert_resolver TEXT NOT NULL DEFAULT '',
   ssl_forced INTEGER NOT NULL DEFAULT 1,
@@ -212,6 +217,49 @@ export function openDb(): DatabaseSync {
   if (!colNames.has('path_rewrites')) {
     db.exec(`ALTER TABLE proxy_hosts ADD COLUMN path_rewrites TEXT NOT NULL DEFAULT '[]'`)
   }
+  if (!colNames.has('upstreams')) {
+    db.exec(`ALTER TABLE proxy_hosts ADD COLUMN upstreams TEXT NOT NULL DEFAULT '[]'`)
+  }
+  if (!colNames.has('health_check_enabled')) {
+    db.exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_enabled INTEGER NOT NULL DEFAULT 0`)
+  }
+  if (!colNames.has('health_check_path')) {
+    db.exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_path TEXT NOT NULL DEFAULT '/'`)
+  }
+  if (!colNames.has('health_check_interval')) {
+    db.exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_interval TEXT NOT NULL DEFAULT '30s'`)
+  }
+  if (!colNames.has('health_check_timeout')) {
+    db.exec(`ALTER TABLE proxy_hosts ADD COLUMN health_check_timeout TEXT NOT NULL DEFAULT '5s'`)
+  }
+  // Seed upstreams JSON from legacy single forward_* columns when empty.
+  const seedRows = db
+    .prepare(
+      `SELECT id, forward_scheme, forward_host, forward_port, upstreams
+       FROM proxy_hosts
+       WHERE upstreams IS NULL OR upstreams = '' OR upstreams = '[]'`,
+    )
+    .all() as {
+    id: string
+    forward_scheme: string
+    forward_host: string
+    forward_port: number
+    upstreams: string
+  }[]
+  const seedStmt = db.prepare(`UPDATE proxy_hosts SET upstreams = ? WHERE id = ?`)
+  for (const row of seedRows) {
+    seedStmt.run(
+      JSON.stringify([
+        {
+          scheme: row.forward_scheme === 'https' ? 'https' : 'http',
+          host: row.forward_host,
+          port: Number(row.forward_port) || 80,
+          weight: 1,
+        },
+      ]),
+      row.id,
+    )
+  }
 
   // Drop any leftover columns not in the current schema (SQLite 3.35+).
   const proxyHostCols = new Set([
@@ -220,6 +268,11 @@ export function openDb(): DatabaseSync {
     'forward_scheme',
     'forward_host',
     'forward_port',
+    'upstreams',
+    'health_check_enabled',
+    'health_check_path',
+    'health_check_interval',
+    'health_check_timeout',
     'certificate_id',
     'cert_resolver',
     'ssl_forced',

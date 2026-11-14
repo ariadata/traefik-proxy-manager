@@ -26,13 +26,15 @@ import { Input } from '@/components/ui/input'
 import { useTpm } from '@/contexts/tpm-context'
 import { api } from '@/lib/api'
 import type { DataTableFeatures } from '@/lib/data-table'
-import type { PathRewriteRule, ProxyHost } from '@/lib/types'
+import type { PathRewriteRule, ProxyHost, UpstreamTarget } from '@/lib/types'
 
 type HostFormState = {
   domains: string[]
-  forwardHost: string
-  forwardPort: number
-  scheme: 'http' | 'https'
+  upstreams: UpstreamTarget[]
+  healthCheckEnabled: boolean
+  healthCheckPath: string
+  healthCheckInterval: string
+  healthCheckTimeout: string
   sslForced: boolean
   certResolver: string
   selectedWaf: string[]
@@ -49,11 +51,43 @@ type HostFormState = {
 
 const emptyRewrite = (): PathRewriteRule => ({ regex: '', replacement: '' })
 
+const emptyUpstream = (): UpstreamTarget => ({
+  scheme: 'http',
+  host: '127.0.0.1',
+  port: 3000,
+  weight: 1,
+})
+
+function hostUpstreams(host: ProxyHost): UpstreamTarget[] {
+  if (Array.isArray(host.upstreams) && host.upstreams.length > 0) {
+    return host.upstreams.map((u) => ({
+      scheme: u.scheme === 'https' ? 'https' : 'http',
+      host: u.host,
+      port: Number(u.port) || 80,
+      weight: Math.max(1, Number(u.weight) || 1),
+    }))
+  }
+  return [
+    {
+      scheme: host.forward_scheme,
+      host: host.forward_host,
+      port: host.forward_port,
+      weight: 1,
+    },
+  ]
+}
+
+function formatUpstream(u: UpstreamTarget): string {
+  return `${u.scheme}://${u.host}:${u.port}`
+}
+
 const emptyForm = (): HostFormState => ({
   domains: [],
-  forwardHost: '127.0.0.1',
-  forwardPort: 3000,
-  scheme: 'http',
+  upstreams: [emptyUpstream()],
+  healthCheckEnabled: false,
+  healthCheckPath: '/',
+  healthCheckInterval: '30s',
+  healthCheckTimeout: '5s',
   sslForced: true,
   certResolver: '',
   selectedWaf: [],
@@ -71,9 +105,11 @@ const emptyForm = (): HostFormState => ({
 function formFromHost(host: ProxyHost): HostFormState {
   return {
     domains: [...host.domain_names],
-    forwardHost: host.forward_host,
-    forwardPort: host.forward_port,
-    scheme: host.forward_scheme,
+    upstreams: hostUpstreams(host),
+    healthCheckEnabled: !!host.health_check_enabled,
+    healthCheckPath: host.health_check_path || '/',
+    healthCheckInterval: host.health_check_interval || '30s',
+    healthCheckTimeout: host.health_check_timeout || '5s',
     sslForced: host.ssl_forced,
     certResolver: host.cert_resolver || '',
     selectedWaf: [...host.waf_profile_ids],
@@ -120,37 +156,199 @@ function HostFormFields({
           }}
         />
       </Field>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field>
-          <FieldLabel htmlFor={`${idPrefix}-forward-host`}>Upstream host *</FieldLabel>
-          <Input
-            id={`${idPrefix}-forward-host`}
-            value={form.forwardHost}
-            onChange={(e) => setForm((f) => ({ ...f, forwardHost: e.target.value }))}
-            required
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${idPrefix}-forward-port`}>Port *</FieldLabel>
-          <Input
-            id={`${idPrefix}-forward-port`}
-            type="number"
-            value={form.forwardPort}
-            onChange={(e) => setForm((f) => ({ ...f, forwardPort: Number(e.target.value) }))}
-            required
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor={`${idPrefix}-scheme`}>Scheme</FieldLabel>
-          <NativeSelect
-            id={`${idPrefix}-scheme`}
-            value={form.scheme}
-            onChange={(e) => setForm((f) => ({ ...f, scheme: e.target.value as 'http' | 'https' }))}
+      <div className="border-border space-y-3 rounded-lg border p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <FieldLabel id={`${idPrefix}-upstreams-label`}>Upstreams *</FieldLabel>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              Traefik weighted round-robin across healthy targets (max 16).
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-labelledby={`${idPrefix}-upstreams-label`}
+            disabled={form.upstreams.length >= 16}
+            onClick={() =>
+              setForm((f) => ({
+                ...f,
+                upstreams: [...f.upstreams, emptyUpstream()],
+              }))
+            }
           >
-            <option value="http">http</option>
-            <option value="https">https</option>
-          </NativeSelect>
-        </Field>
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            Add upstream
+          </Button>
+        </div>
+        <ul className="space-y-3" aria-labelledby={`${idPrefix}-upstreams-label`}>
+          {form.upstreams.map((u, index) => (
+            <li key={index} className="border-border bg-muted/30 space-y-2 rounded-md border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground text-xs font-medium">
+                  Upstream {index + 1}
+                  {index === 0 ? ' (primary)' : ''}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Remove upstream ${index + 1}`}
+                  disabled={form.upstreams.length <= 1}
+                  onClick={() =>
+                    setForm((f) => ({
+                      ...f,
+                      upstreams: f.upstreams.filter((_, i) => i !== index),
+                    }))
+                  }
+                >
+                  Remove
+                </Button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor={`${idPrefix}-up-host-${index}`}>Host *</FieldLabel>
+                  <Input
+                    id={`${idPrefix}-up-host-${index}`}
+                    value={u.host}
+                    placeholder="127.0.0.1 or app.internal"
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        upstreams: f.upstreams.map((row, i) =>
+                          i === index ? { ...row, host: e.target.value } : row,
+                        ),
+                      }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`${idPrefix}-up-port-${index}`}>Port *</FieldLabel>
+                  <Input
+                    id={`${idPrefix}-up-port-${index}`}
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={u.port}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        upstreams: f.upstreams.map((row, i) =>
+                          i === index ? { ...row, port: Number(e.target.value) } : row,
+                        ),
+                      }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`${idPrefix}-up-scheme-${index}`}>Scheme</FieldLabel>
+                  <NativeSelect
+                    id={`${idPrefix}-up-scheme-${index}`}
+                    value={u.scheme}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        upstreams: f.upstreams.map((row, i) =>
+                          i === index
+                            ? { ...row, scheme: e.target.value as 'http' | 'https' }
+                            : row,
+                        ),
+                      }))
+                    }
+                  >
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                  </NativeSelect>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={`${idPrefix}-up-weight-${index}`}>Weight</FieldLabel>
+                  <Input
+                    id={`${idPrefix}-up-weight-${index}`}
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={u.weight}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        upstreams: f.upstreams.map((row, i) =>
+                          i === index
+                            ? { ...row, weight: Math.max(1, Number(e.target.value) || 1) }
+                            : row,
+                        ),
+                      }))
+                    }
+                    required
+                  />
+                </Field>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="border-border space-y-3 rounded-lg border p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <FieldLabel>Active health check</FieldLabel>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              Traefik probes each upstream and removes unhealthy ones from rotation.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={form.healthCheckEnabled}
+              onCheckedChange={(v) => setForm((f) => ({ ...f, healthCheckEnabled: v === true }))}
+            />
+            Enable
+          </label>
+        </div>
+        {form.healthCheckEnabled && (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field className="sm:col-span-3">
+              <FieldLabel htmlFor={`${idPrefix}-hc-path`}>Path *</FieldLabel>
+              <Input
+                id={`${idPrefix}-hc-path`}
+                value={form.healthCheckPath}
+                placeholder="/health"
+                onChange={(e) => setForm((f) => ({ ...f, healthCheckPath: e.target.value }))}
+                required
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`${idPrefix}-hc-interval`}>Interval</FieldLabel>
+              <NativeSelect
+                id={`${idPrefix}-hc-interval`}
+                value={form.healthCheckInterval}
+                onChange={(e) => setForm((f) => ({ ...f, healthCheckInterval: e.target.value }))}
+              >
+                <option value="5s">5s</option>
+                <option value="10s">10s</option>
+                <option value="30s">30s</option>
+                <option value="1m">1m</option>
+                <option value="5m">5m</option>
+              </NativeSelect>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`${idPrefix}-hc-timeout`}>Timeout</FieldLabel>
+              <NativeSelect
+                id={`${idPrefix}-hc-timeout`}
+                value={form.healthCheckTimeout}
+                onChange={(e) => setForm((f) => ({ ...f, healthCheckTimeout: e.target.value }))}
+              >
+                <option value="2s">2s</option>
+                <option value="3s">3s</option>
+                <option value="5s">5s</option>
+                <option value="10s">10s</option>
+              </NativeSelect>
+            </Field>
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field>
           <FieldLabel htmlFor={`${idPrefix}-resolver`}>Cert resolver</FieldLabel>
           <NativeSelect
@@ -434,11 +632,21 @@ function HostFormFields({
 }
 
 function payloadFromForm(form: HostFormState) {
+  const upstreams = form.upstreams
+    .map((u) => ({
+      scheme: u.scheme,
+      host: u.host.trim(),
+      port: Number(u.port),
+      weight: Math.max(1, Number(u.weight) || 1),
+    }))
+    .filter((u) => u.host && u.port >= 1 && u.port <= 65535)
   return {
     domain_names: form.domains,
-    forward_scheme: form.scheme,
-    forward_host: form.forwardHost,
-    forward_port: Number(form.forwardPort),
+    upstreams,
+    health_check_enabled: form.healthCheckEnabled,
+    health_check_path: form.healthCheckPath.trim() || '/',
+    health_check_interval: form.healthCheckInterval,
+    health_check_timeout: form.healthCheckTimeout,
     ssl_forced: form.sslForced,
     cert_resolver: form.certResolver,
     waf_profile_ids: form.selectedWaf,
@@ -468,11 +676,13 @@ function AddHostDialog({ onSaved }: { onSaved: () => Promise<void> }) {
       setDomainInvalid(true)
       return
     }
+    const body = payloadFromForm(form)
+    if (body.upstreams.length === 0) return
     setBusy(true)
     try {
       await api('/api/v1/hosts', {
         method: 'POST',
-        body: JSON.stringify(payloadFromForm(form)),
+        body: JSON.stringify(body),
       })
       setForm(emptyForm())
       setDomainInvalid(false)
@@ -498,7 +708,7 @@ function AddHostDialog({ onSaved }: { onSaved: () => Promise<void> }) {
         <Plus data-icon="inline-start" />
         Add host
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add proxy host</DialogTitle>
           <DialogDescription>
@@ -557,11 +767,13 @@ function EditHostDialog({
       setDomainInvalid(true)
       return
     }
+    const body = payloadFromForm(form)
+    if (body.upstreams.length === 0) return
     setBusy(true)
     try {
       await api(`/api/v1/hosts/${host.id}`, {
         method: 'PUT',
-        body: JSON.stringify(payloadFromForm(form)),
+        body: JSON.stringify(body),
       })
       onOpenChange(false)
       await onSaved()
@@ -572,7 +784,7 @@ function EditHostDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Edit proxy host</DialogTitle>
           <DialogDescription>
@@ -618,13 +830,27 @@ export function HostsPage() {
       },
       {
         id: 'upstream',
-        accessorFn: (row) => `${row.forward_scheme}://${row.forward_host}:${row.forward_port}`,
-        header: ({ column }) => <DataTableColumnHeader column={column} title="Upstream" />,
-        cell: ({ row }) => (
-          <span className="text-muted-foreground font-mono text-xs">
-            {row.original.forward_scheme}://{row.original.forward_host}:{row.original.forward_port}
-          </span>
-        ),
+        accessorFn: (row) =>
+          hostUpstreams(row)
+            .map((u) => formatUpstream(u))
+            .join(', '),
+        header: ({ column }) => <DataTableColumnHeader column={column} title="Upstreams" />,
+        cell: ({ row }) => {
+          const list = hostUpstreams(row.original)
+          return (
+            <div className="text-muted-foreground max-w-[260px] space-y-0.5 font-mono text-xs">
+              <div className="truncate">{formatUpstream(list[0]!)}</div>
+              {list.length > 1 ? (
+                <div className="text-[11px]">
+                  +{list.length - 1} more
+                  {row.original.health_check_enabled ? ' · health' : ''}
+                </div>
+              ) : row.original.health_check_enabled ? (
+                <div className="text-[11px]">health check</div>
+              ) : null}
+            </div>
+          )
+        },
       },
       {
         accessorKey: 'cert_resolver',
@@ -741,6 +967,7 @@ export function HostsPage() {
         }}
         onSaved={refreshAll}
       />
+
     </div>
   )
 }

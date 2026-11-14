@@ -44,7 +44,7 @@ services:
       - tpm-network
 
   tpm:
-    image: ghcr.io/ariadata/traefik-proxy-manager:latest
+    #image: ghcr.io/ariadata/traefik-proxy-manager:latest
     build:
       context: .
       dockerfile: Dockerfile

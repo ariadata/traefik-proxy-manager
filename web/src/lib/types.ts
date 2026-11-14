@@ -15,12 +15,25 @@ export type PathRewriteRule = {
   replacement: string
 }
 
+export type UpstreamTarget = {
+  scheme: 'http' | 'https'
+  host: string
+  port: number
+  weight: number
+}
+
 export type ProxyHost = {
   id: string
   domain_names: string[]
+  /** Primary upstream (first of `upstreams`) — kept for backward-compatible clients. */
   forward_scheme: 'http' | 'https'
   forward_host: string
   forward_port: number
+  upstreams: UpstreamTarget[]
+  health_check_enabled: boolean
+  health_check_path: string
+  health_check_interval: string
+  health_check_timeout: string
   cert_resolver: string
   certificate_id: string | null
   ssl_forced: boolean

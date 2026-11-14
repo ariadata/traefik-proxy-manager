@@ -24,6 +24,37 @@ export function assertHostnames(domains: string[]): string[] {
   return domains.map(assertHostname)
 }
 
+/** Upstream target: hostname, IPv4, or IPv6 (optional brackets). */
+export function assertUpstreamHost(host: string): string {
+  let h = String(host || '').trim()
+  if (!h || h.length > 253 || h.includes('`') || /\s/.test(h) || h.includes('/')) {
+    throw new Error(`invalid upstream host: ${host}`)
+  }
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1)
+  }
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h)) {
+    const octets = h.split('.').map(Number)
+    if (octets.some((n) => Number.isNaN(n) || n > 255)) {
+      throw new Error(`invalid upstream host: ${host}`)
+    }
+    return h
+  }
+  if (h.includes(':')) {
+    if (!isCidrOrIp(h) || h.includes('/')) {
+      throw new Error(`invalid upstream host: ${host}`)
+    }
+    return h.toLowerCase()
+  }
+  return assertHostname(h)
+}
+
+/** Build Traefik server URL; bracket IPv6 literals. */
+export function upstreamServerUrl(scheme: string, host: string, port: number): string {
+  const h = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `${scheme}://${h}:${port}`
+}
+
 export function hostRule(domains: string[]): string {
   return domains.map((d) => `Host(\`${escapeRuleLiteral(d)}\`)`).join(' || ')
 }

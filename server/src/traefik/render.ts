@@ -12,6 +12,7 @@ import {
   deepMergeSafe,
   escapeRuleLiteral,
   hostRule,
+  upstreamServerUrl,
 } from './rules.js'
 
 function safeId(id: string): string {
@@ -201,20 +202,43 @@ export function renderHostYaml(host: ProxyHost): string {
     }
   }
 
+  const upstreams =
+    host.upstreams?.length > 0
+      ? host.upstreams
+      : [
+          {
+            scheme: host.forward_scheme,
+            host: host.forward_host,
+            port: host.forward_port,
+            weight: 1,
+          },
+        ]
+
+  const loadBalancer: Record<string, unknown> = {
+    // Traefik default WRR (Earliest Deadline First) — equal weights ≈ round-robin.
+    strategy: 'wrr',
+    servers: upstreams.map((u) => ({
+      url: upstreamServerUrl(u.scheme, u.host, u.port),
+      weight: u.weight ?? 1,
+    })),
+    passHostHeader: true,
+  }
+
+  if (host.health_check_enabled) {
+    loadBalancer.healthCheck = {
+      path: host.health_check_path || '/',
+      interval: host.health_check_interval || '30s',
+      timeout: host.health_check_timeout || '5s',
+    }
+  }
+
   const doc: Record<string, unknown> = {
     http: {
       routers,
       middlewares: Object.keys(middlewares).length ? middlewares : undefined,
       services: {
         [serviceName]: {
-          loadBalancer: {
-            servers: [
-              {
-                url: `${host.forward_scheme}://${host.forward_host}:${host.forward_port}`,
-              },
-            ],
-            passHostHeader: true,
-          },
+          loadBalancer,
         },
       },
     },

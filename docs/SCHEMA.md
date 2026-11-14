@@ -64,7 +64,10 @@ WAL mode. Applied on boot from `server/src/db.ts`.
 |--------|------|--------|
 | id | TEXT PK | YAML filename |
 | domain_names | TEXT | JSON array |
-| forward_scheme / host / port | | Upstream |
+| forward_scheme / host / port | | Primary upstream (mirrored from `upstreams[0]`) |
+| upstreams | TEXT | JSON `[{scheme, host, port, weight}]` — Traefik WRR servers |
+| health_check_enabled | INTEGER | Traefik active health check |
+| health_check_path / interval / timeout | TEXT | Defaults `/`, `30s`, `5s` |
 | certificate_id | TEXT NULL | FK certificates |
 | cert_resolver | TEXT | Traefik resolver name or id |
 | ssl_forced / enabled | INTEGER | |

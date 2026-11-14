@@ -4,7 +4,9 @@ Single-admin Traefik control plane. Feature set of the current release.
 
 ## Proxy hosts
 
-- One or more domain names → upstream `scheme://host:port`
+- One or more domain names → one or more upstreams (`scheme://host:port`, optional weight)
+- Traefik weighted round-robin (`wrr`) across upstreams; unhealthy targets dropped when health check is on
+- Optional active health check (path / interval / timeout) via Traefik `loadBalancer.healthCheck`
 - Force HTTPS
 - Attach an ACME certificate resolver **or** a custom certificate
 - Attach header rules, WAF profiles, and an access list
