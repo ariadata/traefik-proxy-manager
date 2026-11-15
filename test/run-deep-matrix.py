@@ -282,13 +282,14 @@ def suite_G():
         bad.append(str(e))
     rec("G-02", "PASS" if not bad and rc == 0 else "FAIL", "Critical", "; ".join(bad) or f"routers ok rc={rc}")
 
-    # G-03 restart survival
+    # G-03 restart survival (must be healthy before restart — equal-but-broken is not a pass)
     before = {h: (curl(f"https://{h}/")[0], fp(h)) for h in [H, HA, HP]}
+    healthy = before.get(H, (0, ""))[0] == 200 and before.get(HA, (0, ""))[0] in (401, 403)
     ssh("docker restart tpm_traefik")
     time.sleep(12)
     after = {h: (curl(f"https://{h}/")[0], fp(h)) for h in [H, HA, HP]}
     same = before == after
-    rec("G-03", "PASS" if same else "FAIL", "Critical", f"before={before} after={after}")
+    rec("G-03", "PASS" if same and healthy else "FAIL", "Critical", f"healthy={healthy} before={before} after={after}")
 
     # G-04 canary — sample during a harmless PUT
     fails = 0
@@ -804,6 +805,15 @@ def suite_Y():
             "forward_scheme": h["forward_scheme"],
             "forward_host": h["forward_host"],
             "forward_port": h["forward_port"],
+            "upstreams": h.get("upstreams")
+            or [
+                {
+                    "scheme": h["forward_scheme"],
+                    "host": h["forward_host"],
+                    "port": h["forward_port"],
+                    "weight": 1,
+                }
+            ],
             "cert_resolver": h.get("cert_resolver") or "cf-dns01",
             "ssl_forced": h["ssl_forced"],
             "enabled": h["enabled"],
@@ -975,14 +985,21 @@ def suite_PN():
     rec("PN-07", "N/A", "High", "session hash-at-rest inspection skipped")
     rec("PN-08", "N/A", "Medium", "DB expiry tweak skipped")
 
-    c, _, _ = curl(
+    c, body, _ = curl(
         f"{P}/api/v1/hosts",
         method="POST",
         cookie=COOKIE,
         headers={"Origin": "https://evil.example", "Content-Type": "application/json"},
         data=json.dumps({"domain_names": ["x.com"], "forward_host": "1.1.1.1", "forward_port": 80, "forward_scheme": "http"}),
     )
-    # may still succeed without CSRF — document
+    # may still succeed without CSRF — document; never leave junk host behind
+    if c in (200, 201):
+        try:
+            hid = json.loads(body).get("id") if body else None
+            if hid:
+                api("DELETE", f"/api/v1/hosts/{hid}")
+        except Exception:
+            pass
     rec("PN-09", "FAIL" if c in (200, 201) else "PASS", "High", f"cross-origin POST hosts code={c}")
 
     rc, out = sh(f"curl -si -b {COOKIE} {P}/api/v1/hosts -H 'Origin: https://evil.example' | grep -i access-control | head -5")
@@ -1175,12 +1192,50 @@ def write_report():
     print(f"\nWrote {OUT} ({len(results)} cases)")
 
 
+def cleanup_ephemeral_hosts() -> None:
+    """Remove leftover test hosts / duplicate domain rows that cause Traefik 502 races."""
+    code, hosts = api("GET", "/api/v1/hosts")
+    if code != 200 or not isinstance(hosts, dict):
+        return
+    items = hosts.get("items", [])
+    keep = {d.lower() for d in [H, HO, HA, HR, HP, HW, HWAF, HRL, f"tpm-custom.{DOMAIN}"]}
+
+    # Drop clear ephemeral leftovers from prior runs.
+    for h in items:
+        primary = str((h.get("domain_names") or [""])[0]).lower()
+        if primary.startswith(("v6up", "v6upb", "badredir-", "evil")) or primary == "x.com":
+            api("DELETE", f"/api/v1/hosts/{h['id']}")
+            print(f"  cleaned ephemeral host {primary}")
+
+    # Re-load and collapse duplicate domains (keep oldest created_at).
+    code, hosts = api("GET", "/api/v1/hosts")
+    if code != 200 or not isinstance(hosts, dict):
+        return
+    by_domain: dict[str, list] = {}
+    for h in hosts.get("items", []):
+        for d in h.get("domain_names") or []:
+            by_domain.setdefault(str(d).lower(), []).append(h)
+    for domain, rows in by_domain.items():
+        if len(rows) <= 1:
+            continue
+        rows_sorted = sorted(rows, key=lambda x: x.get("created_at") or "")
+        for extra in rows_sorted[1:]:
+            api("DELETE", f"/api/v1/hosts/{extra['id']}")
+            print(f"  removed duplicate domain {domain} id={extra['id'][:8]} keep={domain in keep}")
+
+
 def main():
     print("waiting for certs on newly assigned hosts...")
     for host in [HW, HA, HRL, HP]:
         ok = wait_le(host, tries=18)
         print(f"  cert {host}: {'OK' if ok else 'DEFAULT/pending'}")
     login()
+    print("cleaning ephemeral hosts...")
+    cleanup_ephemeral_hosts()
+    # Ensure canary host is healthy before suites (fail fast)
+    c0, _, _ = curl(f"https://{H}/")
+    if c0 != 200:
+        print(f"WARNING: canary {H} returned {c0} before suites")
     for fn in [
         suite_G,
         suite_TLS,

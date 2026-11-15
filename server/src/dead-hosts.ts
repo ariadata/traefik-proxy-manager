@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { getDb, withImmediateTransaction } from './db.js'
 import { assertDomainsAvailable } from './domains.js'
-import { getDb } from './db.js'
 import { renderDeadYaml, removeDeadYaml } from './traefik/render-dead.js'
 import { assertCertResolver, assertHostnames } from './traefik/rules.js'
 
@@ -87,29 +87,31 @@ function syncYaml(host: DeadHost): void {
 }
 
 export function createDeadHost(input: DeadHostInput): DeadHost {
-  assertDomainsAvailable(input.domain_names)
   const id = randomUUID()
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `INSERT INTO dead_hosts (
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names)
+    getDb()
+      .prepare(
+        `INSERT INTO dead_hosts (
         id, domain_names, status_code, body_html, cert_resolver, certificate_id,
         ssl_forced, enabled, access_list_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      JSON.stringify(input.domain_names),
-      input.status_code ?? 404,
-      input.body_html || '',
-      input.cert_resolver || '',
-      input.certificate_id || null,
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      input.access_list_id || null,
-      now,
-      now,
-    )
+      )
+      .run(
+        id,
+        JSON.stringify(input.domain_names),
+        input.status_code ?? 404,
+        input.body_html || '',
+        input.cert_resolver || '',
+        input.certificate_id || null,
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        input.access_list_id || null,
+        now,
+        now,
+      )
+  })
   const host = getDeadHost(id)!
   syncYaml(host)
   return host
@@ -117,27 +119,29 @@ export function createDeadHost(input: DeadHostInput): DeadHost {
 
 export function updateDeadHost(id: string, input: DeadHostInput): DeadHost | null {
   if (!getDeadHost(id)) return null
-  assertDomainsAvailable(input.domain_names, { excludeTable: 'dead_hosts', excludeId: id })
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `UPDATE dead_hosts SET
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names, { excludeTable: 'dead_hosts', excludeId: id })
+    getDb()
+      .prepare(
+        `UPDATE dead_hosts SET
         domain_names=?, status_code=?, body_html=?, cert_resolver=?, certificate_id=?,
         ssl_forced=?, enabled=?, access_list_id=?, updated_at=?
        WHERE id=?`,
-    )
-    .run(
-      JSON.stringify(input.domain_names),
-      input.status_code ?? 404,
-      input.body_html || '',
-      input.cert_resolver || '',
-      input.certificate_id || null,
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      input.access_list_id || null,
-      now,
-      id,
-    )
+      )
+      .run(
+        JSON.stringify(input.domain_names),
+        input.status_code ?? 404,
+        input.body_html || '',
+        input.cert_resolver || '',
+        input.certificate_id || null,
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        input.access_list_id || null,
+        now,
+        id,
+      )
+  })
   const host = getDeadHost(id)!
   syncYaml(host)
   return host

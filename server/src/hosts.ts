@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
 import { assertDomainsAvailable } from './domains.js'
-import { getDb } from './db.js'
+import { getDb, withImmediateTransaction } from './db.js'
 import { renderHostYaml, removeHostYaml } from './traefik/render.js'
 import {
   assertCertResolver,
@@ -276,6 +276,7 @@ export function parseHostInput(body: unknown): HostInput {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('advanced_yaml must be a YAML mapping')
       }
+      assertAdvancedYamlShape(parsed as Record<string, unknown>)
     } catch (err) {
       throw new Error(`invalid advanced_yaml: ${(err as Error).message}`)
     }
@@ -303,13 +304,30 @@ export function getHost(id: string): ProxyHost | null {
   return row ? mapRow(row) : null
 }
 
+function assertAdvancedYamlShape(parsed: Record<string, unknown>): void {
+  const http = parsed.http
+  if (!http || typeof http !== 'object' || Array.isArray(http)) return
+  const routers = (http as Record<string, unknown>).routers
+  if (!routers || typeof routers !== 'object' || Array.isArray(routers)) return
+  for (const [name, router] of Object.entries(routers as Record<string, unknown>)) {
+    if (!router || typeof router !== 'object' || Array.isArray(router)) {
+      throw new Error(`router ${name} must be a mapping`)
+    }
+    const rule = (router as Record<string, unknown>).rule
+    if (rule !== undefined && typeof rule !== 'string') {
+      throw new Error(`router ${name}.rule must be a string`)
+    }
+  }
+}
+
 export function createHost(input: HostInput): ProxyHost {
-  assertDomainsAvailable(input.domain_names)
   const id = randomUUID()
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `INSERT INTO proxy_hosts (
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names)
+    getDb()
+      .prepare(
+        `INSERT INTO proxy_hosts (
         id, domain_names, forward_scheme, forward_host, forward_port,
         upstreams, health_check_enabled, health_check_path, health_check_interval, health_check_timeout,
         certificate_id, cert_resolver, ssl_forced, enabled,
@@ -317,34 +335,35 @@ export function createHost(input: HostInput): ProxyHost {
         rate_limit_enabled, rate_limit_average, rate_limit_burst, rate_limit_period,
         path_rewrites, advanced_yaml, extra_json, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
-    )
-    .run(
-      id,
-      JSON.stringify(input.domain_names),
-      input.forward_scheme,
-      input.forward_host,
-      input.forward_port,
-      JSON.stringify(input.upstreams),
-      input.health_check_enabled ? 1 : 0,
-      input.health_check_path || '/',
-      input.health_check_interval || '30s',
-      input.health_check_timeout || '5s',
-      input.certificate_id || null,
-      input.cert_resolver || '',
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      JSON.stringify(input.waf_profile_ids || []),
-      JSON.stringify(input.header_rule_ids || []),
-      input.access_list_id || null,
-      input.rate_limit_enabled ? 1 : 0,
-      input.rate_limit_average ?? 100,
-      input.rate_limit_burst ?? 50,
-      input.rate_limit_period || '1m',
-      JSON.stringify(input.path_rewrites || []),
-      input.advanced_yaml || '',
-      now,
-      now,
-    )
+      )
+      .run(
+        id,
+        JSON.stringify(input.domain_names),
+        input.forward_scheme,
+        input.forward_host,
+        input.forward_port,
+        JSON.stringify(input.upstreams),
+        input.health_check_enabled ? 1 : 0,
+        input.health_check_path || '/',
+        input.health_check_interval || '30s',
+        input.health_check_timeout || '5s',
+        input.certificate_id || null,
+        input.cert_resolver || '',
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        JSON.stringify(input.waf_profile_ids || []),
+        JSON.stringify(input.header_rule_ids || []),
+        input.access_list_id || null,
+        input.rate_limit_enabled ? 1 : 0,
+        input.rate_limit_average ?? 100,
+        input.rate_limit_burst ?? 50,
+        input.rate_limit_period || '1m',
+        JSON.stringify(input.path_rewrites || []),
+        input.advanced_yaml || '',
+        now,
+        now,
+      )
+  })
   const host = getHost(id)!
   syncHostYaml(host)
   return host
@@ -352,11 +371,12 @@ export function createHost(input: HostInput): ProxyHost {
 
 export function updateHost(id: string, input: HostInput): ProxyHost | null {
   if (!getHost(id)) return null
-  assertDomainsAvailable(input.domain_names, { excludeTable: 'proxy_hosts', excludeId: id })
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `UPDATE proxy_hosts SET
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names, { excludeTable: 'proxy_hosts', excludeId: id })
+    getDb()
+      .prepare(
+        `UPDATE proxy_hosts SET
         domain_names = ?, forward_scheme = ?, forward_host = ?, forward_port = ?,
         upstreams = ?, health_check_enabled = ?, health_check_path = ?,
         health_check_interval = ?, health_check_timeout = ?,
@@ -365,33 +385,34 @@ export function updateHost(id: string, input: HostInput): ProxyHost | null {
         rate_limit_enabled = ?, rate_limit_average = ?, rate_limit_burst = ?, rate_limit_period = ?,
         path_rewrites = ?, advanced_yaml = ?, updated_at = ?
       WHERE id = ?`,
-    )
-    .run(
-      JSON.stringify(input.domain_names),
-      input.forward_scheme,
-      input.forward_host,
-      input.forward_port,
-      JSON.stringify(input.upstreams),
-      input.health_check_enabled ? 1 : 0,
-      input.health_check_path || '/',
-      input.health_check_interval || '30s',
-      input.health_check_timeout || '5s',
-      input.certificate_id || null,
-      input.cert_resolver || '',
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      JSON.stringify(input.waf_profile_ids || []),
-      JSON.stringify(input.header_rule_ids || []),
-      input.access_list_id || null,
-      input.rate_limit_enabled ? 1 : 0,
-      input.rate_limit_average ?? 100,
-      input.rate_limit_burst ?? 50,
-      input.rate_limit_period || '1m',
-      JSON.stringify(input.path_rewrites || []),
-      input.advanced_yaml || '',
-      now,
-      id,
-    )
+      )
+      .run(
+        JSON.stringify(input.domain_names),
+        input.forward_scheme,
+        input.forward_host,
+        input.forward_port,
+        JSON.stringify(input.upstreams),
+        input.health_check_enabled ? 1 : 0,
+        input.health_check_path || '/',
+        input.health_check_interval || '30s',
+        input.health_check_timeout || '5s',
+        input.certificate_id || null,
+        input.cert_resolver || '',
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        JSON.stringify(input.waf_profile_ids || []),
+        JSON.stringify(input.header_rule_ids || []),
+        input.access_list_id || null,
+        input.rate_limit_enabled ? 1 : 0,
+        input.rate_limit_average ?? 100,
+        input.rate_limit_burst ?? 50,
+        input.rate_limit_period || '1m',
+        JSON.stringify(input.path_rewrites || []),
+        input.advanced_yaml || '',
+        now,
+        id,
+      )
+  })
   const host = getHost(id)!
   syncHostYaml(host)
   return host

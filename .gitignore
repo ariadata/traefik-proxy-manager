@@ -3,11 +3,8 @@ dev/
 .env
 *.pem
 *.key
-test/data.env
-test/zone.env
-test/lab.env
-test/secrets/
-test/deep-matrix-results.*
+/test/
+/scripts/
 
 node_modules/
 web/node_modules/

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { getDb, withImmediateTransaction } from './db.js'
 import { assertDomainsAvailable } from './domains.js'
-import { getDb } from './db.js'
 import { renderRedirectYaml, removeRedirectYaml } from './traefik/render-redirect.js'
 import { assertCertResolver, assertHostnames } from './traefik/rules.js'
 
@@ -111,33 +111,35 @@ function syncYaml(host: RedirectionHost): void {
 }
 
 export function createRedirection(input: RedirectionInput): RedirectionHost {
-  assertDomainsAvailable(input.domain_names)
   const id = randomUUID()
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `INSERT INTO redirection_hosts (
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names)
+    getDb()
+      .prepare(
+        `INSERT INTO redirection_hosts (
         id, domain_names, forward_scheme, forward_host, forward_path, preserve_path,
         status_code, cert_resolver, certificate_id, ssl_forced, enabled, access_list_id,
         created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      JSON.stringify(input.domain_names),
-      input.forward_scheme,
-      input.forward_host,
-      input.forward_path || '/',
-      input.preserve_path ? 1 : 0,
-      input.status_code ?? 301,
-      input.cert_resolver || '',
-      input.certificate_id || null,
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      input.access_list_id || null,
-      now,
-      now,
-    )
+      )
+      .run(
+        id,
+        JSON.stringify(input.domain_names),
+        input.forward_scheme,
+        input.forward_host,
+        input.forward_path || '/',
+        input.preserve_path ? 1 : 0,
+        input.status_code ?? 301,
+        input.cert_resolver || '',
+        input.certificate_id || null,
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        input.access_list_id || null,
+        now,
+        now,
+      )
+  })
   const host = getRedirection(id)!
   syncYaml(host)
   return host
@@ -145,31 +147,33 @@ export function createRedirection(input: RedirectionInput): RedirectionHost {
 
 export function updateRedirection(id: string, input: RedirectionInput): RedirectionHost | null {
   if (!getRedirection(id)) return null
-  assertDomainsAvailable(input.domain_names, { excludeTable: 'redirection_hosts', excludeId: id })
   const now = new Date().toISOString()
-  getDb()
-    .prepare(
-      `UPDATE redirection_hosts SET
+  withImmediateTransaction(() => {
+    assertDomainsAvailable(input.domain_names, { excludeTable: 'redirection_hosts', excludeId: id })
+    getDb()
+      .prepare(
+        `UPDATE redirection_hosts SET
         domain_names=?, forward_scheme=?, forward_host=?, forward_path=?, preserve_path=?,
         status_code=?, cert_resolver=?, certificate_id=?, ssl_forced=?, enabled=?, access_list_id=?,
         updated_at=?
        WHERE id=?`,
-    )
-    .run(
-      JSON.stringify(input.domain_names),
-      input.forward_scheme,
-      input.forward_host,
-      input.forward_path || '/',
-      input.preserve_path ? 1 : 0,
-      input.status_code ?? 301,
-      input.cert_resolver || '',
-      input.certificate_id || null,
-      input.ssl_forced ? 1 : 0,
-      input.enabled ? 1 : 0,
-      input.access_list_id || null,
-      now,
-      id,
-    )
+      )
+      .run(
+        JSON.stringify(input.domain_names),
+        input.forward_scheme,
+        input.forward_host,
+        input.forward_path || '/',
+        input.preserve_path ? 1 : 0,
+        input.status_code ?? 301,
+        input.cert_resolver || '',
+        input.certificate_id || null,
+        input.ssl_forced ? 1 : 0,
+        input.enabled ? 1 : 0,
+        input.access_list_id || null,
+        now,
+        id,
+      )
+  })
   const host = getRedirection(id)!
   syncYaml(host)
   return host

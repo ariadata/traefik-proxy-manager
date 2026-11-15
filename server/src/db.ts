@@ -304,6 +304,24 @@ export function getDb(): DatabaseSync {
   return db
 }
 
+/** Serialize domain-claim writes so assert+insert cannot race. */
+export function withImmediateTransaction<T>(fn: () => T): T {
+  const conn = getDb()
+  conn.exec('BEGIN IMMEDIATE')
+  try {
+    const result = fn()
+    conn.exec('COMMIT')
+    return result
+  } catch (err) {
+    try {
+      conn.exec('ROLLBACK')
+    } catch {
+      /* ignore rollback errors */
+    }
+    throw err
+  }
+}
+
 export function closeDb(): void {
   if (!db) return
   try {

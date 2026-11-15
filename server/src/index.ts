@@ -7,6 +7,7 @@ import { cfg, ensureDirs } from './config.js'
 import { closeDb, openDb } from './db.js'
 import { registerRoutes } from './routes.js'
 import { startSslChecker } from './ssl/checker.js'
+import { repairDuplicateDomains } from './domains.js'
 import { reRenderAllDeadHosts } from './dead-hosts.js'
 import { reRenderAllHosts } from './hosts.js'
 import { reRenderAllRedirects } from './redirections.js'
@@ -19,6 +20,7 @@ async function main() {
   ensureDirs()
   openDb()
   seedDefaultWafProfiles()
+  const repaired = repairDuplicateDomains()
   renderSharedMiddlewares()
   reRenderAllHosts()
   reRenderAllRedirects()
@@ -33,6 +35,9 @@ async function main() {
     // Honor X-Forwarded-Proto / X-Forwarded-For from Traefik (Secure cookie auto-detect).
     trustProxy: true,
   })
+  if (repaired.disabled.length) {
+    app.log.warn({ repaired: repaired.disabled }, 'disabled duplicate domain host rows')
+  }
 
   await app.register(cookie)
   await registerRoutes(app)
